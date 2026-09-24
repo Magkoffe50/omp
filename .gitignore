@@ -1,8 +1,15 @@
-# Whitelist: only secret-free omp settings are versioned.
-# mcp.json holds OAuth client secrets; *.db, sessions, blobs, cache are runtime state;
-# extensions/ is managed by Orca.
+# Whitelist: only secret-free omp configuration is versioned.
+# Excluded on purpose:
+#   agent/mcp.json      OAuth client secret (repo is public)
+#   *.db, sessions, logs, cache, run, profiles, natives, puppeteer: runtime state
+#   agent/extensions/   installed and updated by Orca
+#   browser-relay/, plugins/: installed by omp
 /*
 !/.gitignore
-!/config.yml
-!/keybindings.yml
-!/agents/
+!/extensions/
+
+!/agent/
+/agent/*
+!/agent/config.yml
+!/agent/keybindings.yml
+!/agent/agents/
