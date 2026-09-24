@@ -1,0 +1,148 @@
+symbolPreset: nerd
+colorBlindMode: true
+setupVersion: 2
+theme:
+  dark: dark-cavern
+modelRoles:
+  plan: anthropic/claude-fable-5-1:high
+  slow: anthropic/claude-fable-5-1:high
+  smol: anthropic/claude-sonnet-5:low
+  tiny: anthropic/claude-haiku-4-5
+  designer: anthropic/claude-fable-5-1:high
+  commit: anthropic/claude-haiku-4-5-20251001
+  task: anthropic/claude-sonnet-5:high
+  default: anthropic/claude-opus-5-5:high
+  web: anthropic/claude-haiku-4-5
+  vision: anthropic/claude-sonnet-5
+dev:
+  autoqaConsent: granted
+statusLine:
+  compactThinkingLevel: false
+  showHookStatus: false
+  separator: powerline-thin
+  preset: ascii
+  sessionAccent: true
+  transparent: false
+  leftSegments:
+    - context_pct
+    - model
+    - mode
+    - path
+    - git
+    - pr
+  rightSegments:
+    - subagents
+    - session_name
+    - token_total
+    - cost
+terminal:
+  showProgress: false
+tui:
+  textSizing: true
+showHardwareCursor: true
+hideThinkingBlock: true
+task:
+  agentModelOverrides:
+    architect: anthropic/claude-fable-5-1:high
+    implementer: anthropic/claude-opus-5-5:high
+    grunt: anthropic/claude-haiku-4-5
+    sonic: "@smol"
+    task: "@task"
+  showResolvedModelBadge: true
+  maxRuntimeMs: 1800000
+  softRequestBudget: 120
+compaction:
+  thresholdTokens: 400000
+bash:
+  patterns:
+    - match: "git push --force*"
+      approval: deny
+    - match: "git push -f*"
+      approval: deny
+    - match: "git push * --force*"
+      approval: deny
+    - match: "git push * -f"
+      approval: deny
+    - match: "git reset --hard*"
+      approval: deny
+    - match: "git clean -f*"
+      approval: deny
+    - match: "git checkout -- ."
+      approval: deny
+    - match: "git restore ."
+      approval: deny
+    - match: "rm -rf /"
+      approval: deny
+    - match: "rm -rf /Users/kirich"
+      approval: deny
+    - match: "rm -rf /Users/kirich/"
+      approval: deny
+    - match: "rm -rf ~"
+      approval: deny
+    - match: "rm -rf ~/"
+      approval: deny
+    - match: "rm -rf $HOME"
+      approval: deny
+    - match: "rm -rf $HOME/"
+      approval: deny
+display:
+  showTokenUsage: true
+  hideToolActivity: false
+startup:
+  quiet: false
+  changelogMode: summary
+browser:
+  relay: true
+prewalk:
+  enabled: false
+retry:
+  fallbackChains:
+    default:
+      - openai-codex/gpt-5.6-sol:high
+      - cursor/cursor-grok-4.5-high
+    smol:
+      - anthropic/claude-sonnet-4-6:low
+      - anthropic/claude-haiku-4-5
+    task:
+      - anthropic/claude-opus-5-5:high
+    cursor/*:
+      - openai-codex/gpt-5.6-sol:high
+      - anthropic/claude-sonnet-5
+    web:
+      - web/perplexity
+      - google/gemini-2.5-flash
+      - openai-codex/gpt-5.6-luna
+      - xai/grok-4.5
+      - web/zai
+      - web/exa
+      - web/tinyfish
+      - web/jina
+      - web/kagi
+      - web/tavily
+      - web/firecrawl
+      - web/brave
+      - web/kimi
+      - web/parallel
+      - web/synthetic
+      - web/searxng
+      - web/startpage
+      - web/duckduckgo
+      - web/ecosia
+      - web/google
+      - web/mojeek
+      - web/public
+      - google-antigravity/gemini-2.5-flash
+      - openai-codex/gpt-5.6
+      - openai-codex/gpt-5.5
+      - xai-oauth/grok-4.5
+      - web/ollama
+extensions:
+  - /Users/kirich/.omp/extensions/no-kill-user-browser.ts
+composer:
+  shape: box
+bashInterceptor:
+  enabled: true
+skills:
+  customDirectories:
+    - /Users/kirich/.claude/plugins/marketplaces/mattpocock/skills/productivity
+    - /Users/kirich/.claude/plugins/marketplaces/mattpocock/skills/engineering
