@@ -142,6 +142,7 @@ retry:
       - web/ollama
 extensions:
   - /Users/kirich/.omp/extensions/no-kill-user-browser.ts
+  - /Users/kirich/.omp/extensions/agent-gates.ts
 composer:
   shape: box
 bashInterceptor:
