@@ -1,8 +1,7 @@
 /**
- * Gates: make the agent follow the review rule with a case-by-case user override instead of a
- * silent choice. This is a compliance nudge for a cooperating model, not a sandbox: it matches
- * what the model asks the tools to run and can be evaded by a determined one (variable tricks,
- * scripts that commit internally).
+ * Gates: make the agent follow the review rule. This is a compliance nudge for a cooperating
+ * model, not a sandbox: it matches what the model asks the tools to run and can be evaded by a
+ * determined one (variable tricks, scripts that commit internally).
  *
  * 1. Commit/push gate (blocking). Gated calls:
  *    - `bash` whose command chain runs `git commit`, `git push` or a git alias expanding to one
@@ -21,21 +20,23 @@
  *      and every pushed ref (default HEAD) resolves to that commit's HEAD;
  *    - otherwise the call needs a pass: a `task` item with `agent: "critic"` spawned from this
  *      session finished with status `completed` (host `task:subagent:lifecycle` bus event matched
- *      to a `task`/`eval` tool-call id of this session, never the model's claims), or a one-time
- *      user override (below).
+ *      to a `task`/`eval` tool-call id of this session, never the model's claims), or a user
+ *      waiver (below).
  *    The repo of an operation is the bash call's `cwd`, then a leading `cd X` in the chain, then
  *    `-C dir`; an unresolvable directory never matches a reviewed commit. A pass is consumed in
  *    `tool_result` when the call succeeded and, for commits, only when HEAD actually moved (a hook
  *    failure hidden behind a pipe keeps it); the new HEAD then becomes the reviewed commit. The
  *    pass is not bound to a specific diff: any completed critic unlocks the next commit.
- *    Without a pass: with a UI the user is asked (`ctx.ui.confirm`) to allow it once; without a
- *    UI, or when the dialog is declined or cannot be shown, the call is blocked with a reason
- *    telling the agent to run `critic` or to put the question to the user through the `ask`
- *    tool with a fixed form. The user's answer is read from that `ask` call's structured result
- *    (`details.answers`, host-generated), and only from an `ask` whose html is exactly the fixed
- *    form with its two placeholders filled with plain text (an `ask` that names the gate field
- *    but deviates is blocked with the allowed shape), so the model cannot forge it with hidden
- *    inputs, preselection or swapped labels. "Allow once" unlocks one gated call.
+ *    Without a pass the call is blocked with a reason telling the agent to run `critic`. No
+ *    dialog is shown and the agent is never told to ask the user.
+ *    User waiver: the latest user-authored message of the session — a `message` entry with
+ *    `role: "user"` and `attribution: "user"` in `ctx.sessionManager.getBranch()`, written by the
+ *    host (task prompts, peer/IRC and steering text relayed from agents carry
+ *    `attribution: "agent"`; `before_agent_start` is not used because its `prompt` has no
+ *    attribution and fires for those too) — containing a skip phrase (`SKIP_REVIEW`: «без ревью»,
+ *    «без critic», "no review", "skip review", …) unlocks one gated call. It is consumed like a
+ *    critic pass and never re-armed by the same message, so the next user message without the
+ *    phrase restores the rule.
  *    Inside subagents the gate only blocks: subagents do not commit. Any internal error in the
  *    gate blocks (fail-closed).
  * 2. Reminder (non-blocking `additionalContext`, main session only, once per session): a second
@@ -43,45 +44,23 @@
  *    exact lookup is fine). Errors here are swallowed (fail-open).
  * All state is per session and reset on session start/switch/clear/branch/tree.
  * Known gaps (not resolved, treated as the surrounding directory): `pushd`, `GIT_DIR`/`--git-dir`/
- * `--work-tree`, and a `cd` inside a `sh -c` body relative to a `cd` outside it.
+ * `--work-tree`, and a `cd` inside a `sh -c` body relative to a `cd` outside it. The waiver trusts
+ * the host's attribution: an extension calling `pi.sendUserMessage` without `attribution: "agent"`
+ * counts as the user; a skip phrase is matched literally, so a negated one («не без ревью») also
+ * waives, and the waiver covers one commit or push per message, not a whole batch.
  */
 import { homedir } from "node:os";
 import { isAbsolute, resolve } from "node:path";
 
-export const GATE_FIELD = "agent_gates_commit";
-export const ALLOW_VALUE = "allow-once";
-export const ALLOW_LABEL = "Allow once";
-export const DENY_VALUE = "deny";
 export const CRITIC_AGENT = "critic";
 export const RESEARCHER_AGENT = "researcher";
 
+/** User wording that waives the review: Russian «без ревью/critic/критика», English no/skip/without review/critic. */
+export const SKIP_REVIEW = /без\s+(?:ревью|critic|критик\w*)|\b(?:no|skip|without)\s+(?:the\s+|a\s+)?(?:review|critic)\b/iu;
+
 export type GitVerb = "commit" | "push";
 
-export const APPROVAL_FORM = `<form>
-<p>agent-gates: the agent wants to run <code>OPERATION</code>.</p>
-<p>Rule: commit/push requires a finished <code>critic</code> (cross-model review) run in this session, and none has run since the last commit/push.</p>
-<p>Agent's reason for skipping the review: REASON</p>
-<fieldset><legend>Allow this commit/push once without a critic review?</legend>
-<label><input type="radio" name="${GATE_FIELD}" value="${ALLOW_VALUE}"> ${ALLOW_LABEL}</label>
-<label><input type="radio" name="${GATE_FIELD}" value="${DENY_VALUE}"> No, run critic first</label>
-</fieldset>
-</form>`;
-
 const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
-/** CRLF → LF, each line trimmed, outer whitespace dropped: layout differences never matter. */
-const normalizeHtml = (html: string): string =>
-	html
-		.replace(/\r\n?/g, "\n")
-		.split("\n")
-		.map((line) => line.trim())
-		.join("\n")
-		.trim();
-
-/** Exact form with OPERATION and REASON replaced by plain text (no tags, quotes or entities). */
-const APPROVAL_FORM_PATTERN = new RegExp(
-	`^${escapeRegExp(normalizeHtml(APPROVAL_FORM)).replace("OPERATION", '[^<>"&]*').replace("REASON", '[^<>"&]*')}$`,
-);
 
 const HEREDOC = /<<-?\s*(["']?)(\w+)\1([^\n]*)\n[\s\S]*?\n\t*\2(?=\n|$)/g;
 const QUOTED = /"((?:[^"\\]|\\.)*)"|'([^']*)'/g;
@@ -121,11 +100,17 @@ interface AgentInfo {
 	name: string;
 }
 
+/** Persisted session entry (fields the waiver reads); see `ctx.sessionManager.getBranch()`. */
+interface BranchEntry {
+	type?: string;
+	id?: string;
+	message?: { role?: string; attribution?: string; content?: unknown };
+}
+
 interface GateContext {
 	agent?: AgentInfo;
-	hasUI: boolean;
 	cwd: string;
-	ui: { confirm(title: string, message: string): Promise<boolean> };
+	sessionManager?: { getBranch(): Iterable<BranchEntry> };
 }
 
 /** Payload of the host's `task:subagent:lifecycle` bus event (fields this guard reads). */
@@ -354,21 +339,23 @@ export const taskAgents = (input: Record<string, unknown>): string[] => {
 	return agents.filter((name) => name.length > 0);
 };
 
-/** True when the html is the gate form verbatim (layout aside) with its placeholders filled with plain text. */
-export const isGateForm = (html: string): boolean => APPROVAL_FORM_PATTERN.test(normalizeHtml(html));
+/** Text of a persisted message: a string, or its text blocks joined. */
+const messageText = (content: unknown): string => {
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+	return content
+		.map((block: unknown) => (block !== null && typeof block === "object" && "text" in block && typeof block.text === "string" ? block.text : ""))
+		.join("\n");
+};
 
-/** True when the user submitted the gate form with "Allow once" (structured answer, no timeout). */
-export const askApproved = (event: ToolResultEvent): boolean => {
-	if (event.isError) return false;
-	const details = event.details;
-	if (details === null || typeof details !== "object") return false;
-	const { answers, timedOut } = details as { answers?: unknown; timedOut?: unknown };
-	if (timedOut === true || !Array.isArray(answers)) return false;
-	return answers.some((entry) => {
-		if (entry === null || typeof entry !== "object") return false;
-		const { name, answer } = entry as { name?: unknown; answer?: unknown };
-		return name === GATE_FIELD && answer === ALLOW_LABEL;
-	});
+/** Id of the latest user-authored message when its text waives the review; `undefined` otherwise. */
+export const userWaiverIn = (entries: Iterable<BranchEntry>): string | undefined => {
+	let latest: BranchEntry | undefined;
+	for (const entry of entries) {
+		if (entry.type === "message" && entry.message?.role === "user" && entry.message.attribution === "user") latest = entry;
+	}
+	if (latest === undefined || typeof latest.id !== "string") return undefined;
+	return SKIP_REVIEW.test(messageText(latest.message?.content)) ? latest.id : undefined;
 };
 
 /** Paths a `read`/`grep` call targets, `~` expanded. */
@@ -383,16 +370,16 @@ export const touchesNodeModules = (event: ToolCallEvent): boolean =>
 
 const RECOVERY =
 	`Rule: commit/push requires a finished \`${CRITIC_AGENT}\` review (cross-model code review) in this session, and none has completed since the last commit/push. ` +
-	`Do one of: (1) dispatch \`task\` with an item {agent: "${CRITIC_AGENT}"} that reviews the diff, wait for it to finish, address blocking findings, then retry; ` +
-	`or (2) if you believe the review is unnecessary — including when the user told you to work alone or without agents («сам», «без агентов») — ask the user with the \`ask\` tool, sending exactly this html with only OPERATION and REASON replaced by plain text without < > " & (any other change is rejected): ${APPROVAL_FORM} ` +
-	`If the user picks "${ALLOW_LABEL}", retry the command exactly once; otherwise run \`${CRITIC_AGENT}\`.`;
+	`Dispatch \`task\` with an item {agent: "${CRITIC_AGENT}"} that reviews the diff, wait for it to finish, address blocking findings, then retry. ` +
+	`Do not ask the user to skip the review.`;
 
 type Pass = "critic" | "override" | "head";
 
 export default async function agentGates(pi: GateApi): Promise<void> {
 	/** Session-scoped state: the factory is bound once per session, subagents included. */
 	let criticPassed = false;
-	let overrideOnce = false;
+	/** Id of the user message whose waiver has already been spent. */
+	let waiverUsed: string | undefined;
 	/** Repo and HEAD of the last gated commit that landed in this session. */
 	let reviewed: RepoState | undefined;
 	let researcherRan = false;
@@ -400,12 +387,10 @@ export default async function agentGates(pi: GateApi): Promise<void> {
 	let nodeModulesLookups = 0;
 	/** Ids of `task`/`eval` calls made by this session; lifecycle events are matched against them. */
 	const spawnCallIds = new Set<string>();
-	/** Ids of `ask` calls carrying the exact gate form. */
-	const armedAskIds = new Set<string>();
 	/** Eval variables holding a `commit.draft()`, across eval calls. */
 	const draftNames = new Set<string>();
 	/** Gated calls allowed and still running: what let them through and the repos before the call. */
-	const pending = new Map<string, { pass: Pass; operations: GatedOperation[]; before: (RepoState | undefined)[] }>();
+	const pending = new Map<string, { pass: Pass; waiver?: string; operations: GatedOperation[]; before: (RepoState | undefined)[] }>();
 
 	let verbs: VerbMap = BASE_VERBS;
 	try {
@@ -417,13 +402,12 @@ export default async function agentGates(pi: GateApi): Promise<void> {
 
 	const reset = async (): Promise<undefined> => {
 		criticPassed = false;
-		overrideOnce = false;
+		waiverUsed = undefined;
 		reviewed = undefined;
 		researcherRan = false;
 		researcherReminded = false;
 		nodeModulesLookups = 0;
 		spawnCallIds.clear();
-		armedAskIds.clear();
 		draftNames.clear();
 		pending.clear();
 		return undefined;
@@ -485,9 +469,9 @@ export default async function agentGates(pi: GateApi): Promise<void> {
 				reason: `agent-gates: blocked \`${label}\` in subagent \`${ctx.agent.id}\`: subagents do not commit or push; report what should be committed and leave it to the main agent.`,
 			};
 		}
-		const allow = async (pass: Pass): Promise<undefined> => {
+		const allow = async (pass: Pass, waiver?: string): Promise<undefined> => {
 			const before = await Promise.all(operations.map((op) => (op.verb === "commit" ? repoState(op.dir) : Promise.resolve(undefined))));
-			pending.set(event.toolCallId, { pass, operations, before });
+			pending.set(event.toolCallId, { pass, waiver, operations, before });
 			pi.logger?.info?.("agent-gates: allowed", { operations: label, pass });
 			return undefined;
 		};
@@ -495,18 +479,10 @@ export default async function agentGates(pi: GateApi): Promise<void> {
 		for (const op of operations) if (!(await pushesReviewed(op))) needsPass = true;
 		if (!needsPass) return allow("head");
 		if (criticPassed) return allow("critic");
-		if (overrideOnce) return allow("override");
-		let dialog = "";
-		if (ctx.hasUI) {
-			const allowed = await ctx.ui.confirm(
-				"agent-gates: commit/push without critic review",
-				`The agent wants to run \`${label}\` but no critic review has completed this session. Allow this once?`,
-			);
-			if (allowed) return allow("override");
-			dialog = " — the one-time override was declined or the dialog could not be shown";
-		}
-		pi.logger?.info?.("agent-gates: blocked", { operations: label, hasUI: ctx.hasUI });
-		return { block: true, reason: `agent-gates: blocked \`${label}\`${dialog}. ${RECOVERY}` };
+		const waiver = ctx.sessionManager === undefined ? undefined : userWaiverIn(ctx.sessionManager.getBranch());
+		if (waiver !== undefined && waiver !== waiverUsed) return allow("override", waiver);
+		pi.logger?.info?.("agent-gates: blocked", { operations: label });
+		return { block: true, reason: `agent-gates: blocked \`${label}\`. ${RECOVERY}` };
 	};
 
 	/** Consume the pass of a finished gated call when it did its work; record the commit it landed. */
@@ -528,7 +504,7 @@ export default async function agentGates(pi: GateApi): Promise<void> {
 		const consume = landed || entry.operations.some((op) => op.verb === "push");
 		if (!consume) return;
 		if (entry.pass === "critic") criticPassed = false;
-		if (entry.pass === "override") overrideOnce = false;
+		if (entry.pass === "override") waiverUsed = entry.waiver;
 	};
 
 	const remind = (event: ToolCallEvent, ctx: GateContext): string | undefined => {
@@ -542,18 +518,6 @@ export default async function agentGates(pi: GateApi): Promise<void> {
 
 	pi.on("tool_call", async (event, ctx) => {
 		if (event.toolName === "task" || event.toolName === "eval") spawnCallIds.add(event.toolCallId);
-		if (event.toolName === "ask") {
-			const html = str(event.input.html);
-			if (!html.includes(GATE_FIELD)) return undefined;
-			if (isGateForm(html)) {
-				armedAskIds.add(event.toolCallId);
-				return undefined;
-			}
-			return {
-				block: true,
-				reason: `agent-gates: this form names ${GATE_FIELD} but is not the override form. Send exactly this html, replacing only OPERATION and REASON with plain text that contains none of < > " & : ${APPROVAL_FORM}`,
-			};
-		}
 		let result: ToolCallResult | undefined;
 		try {
 			result = await gate(event, ctx);
@@ -574,10 +538,6 @@ export default async function agentGates(pi: GateApi): Promise<void> {
 	pi.on("tool_result", async (event, ctx) => {
 		try {
 			await settle(event);
-			if (event.toolName === "ask" && armedAskIds.delete(event.toolCallId) && askApproved(event)) {
-				overrideOnce = true;
-				pi.logger?.info?.("agent-gates: user allowed one commit/push via ask");
-			}
 			if (event.toolName === "task" && !event.isError && (ctx.agent === undefined || ctx.agent.kind === "main")) {
 				if (taskAgents(event.input).includes(RESEARCHER_AGENT)) researcherRan = true;
 			}

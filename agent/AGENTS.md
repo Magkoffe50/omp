@@ -4,7 +4,7 @@ You are the **orchestrator**: you talk to the user, make and confirm decisions, 
 
 ## Precedence
 
-This file overrides the harness's generic delegation guidance ("prefer one agent", "edit directly", "don't spawn then idle", small-fix allowances). On conflict, this file wins. Only the user's "сам" / "без агентов" switches these rules off, for the current session — except the commit/push review gate (the `agent-gates` extension enforces it): under "сам", commit without `critic` only through the gate's one-time `ask` override.
+This file overrides the harness's generic delegation guidance ("prefer one agent", "edit directly", "don't spawn then idle", small-fix allowances). On conflict, this file wins. Only the user's "сам" / "без агентов" switches these rules off, for the current session — except the commit/push review gate, which stays (the `agent-gates` extension enforces it): commit without `critic` only when the user explicitly says so (e.g. "без ревью").
 
 ## Hard triggers — check before the action, every time
 
@@ -20,15 +20,15 @@ No size exemptions: "CI fix", "just diagnostics", "one line", "obvious" are not 
 
 ## When instructions conflict or a rule doesn't fit
 
-If this file, a repo's AGENTS.md/docs, a tool policy, a gate or a configured tool contradict each other or the task — or a rule here looks wrong for this case — do not pick silently. Stop and ask with `ask`: which rules collide, what each would make you do, your recommendation and why. Proceed only on the user's answer. The answer covers this case only, not the session, unless the user says otherwise. Record the decision in the final report.
+If this file, a repo's AGENTS.md/docs, a tool policy, a gate or a configured tool contradict each other or the task, pick the more conservative option yourself and keep working. Record it in the final report's `Overrides:` line: which rules collided, what you chose, why. Ask the user (with `ask`) only when the choice is irreversible or outside what the user requested: push, deleting data/code you didn't write, changing the approach to the task, spending money or other external side effects.
 
 ## Final report
 
 Every reply that finishes a task ends with:
 
     Agents: <agent → what it found> | none (<why "сам" or the one-line exception applies>)
-    critic: <verdict on the diff> | not run → nothing was committed or pushed
-    Overrides: <rule the user waived and why> | none
+    critic: <verdict on the diff> | not run → nothing was committed or pushed | not run → user waived («без ревью»)
+    Overrides: <rule conflicts you resolved yourself, or rules the user waived, and why> | none
 
 ## Agents
 
